@@ -1,0 +1,577 @@
+---
+title: "Project Phase 01: Classification and Resampling Methods"
+author: "By Ahmad Hussein, Mahmoud Joumaa, & Rami Abou Fakhr"
+date: "November 2023"
+output:
+  html_document:
+    theme: readable
+    highlight: espresso
+    number_sections: no
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+---
+
+A car company, called MAR, is working on a developing a new class of cars and has asked us, personally, for assistance. Given our strong background in machine learning, MAR has trusted us to develop various models in order to better predict the acceptability of their new product launching soon in the market. MAR has set certain features that it considers to have an impact on the likability of their product and has already collected some data from their prospective clients to study the market response towards their new car. It is now our job to study these features and understand what MAR has to invest in to maximize revenues.
+
+# Library Imports
+
+Before presenting our results, we have gathered all the utilized libraries in the following code block to facilitate the process of going through our report:
+```{r}
+library(corrplot)
+library(leaps)
+library(MASS)
+library(ROCR)
+library(class)
+```
+
+# Exploring the data
+
+## Preparing the Data
+
+As a start, we have decided to visualize the dataset graphically in order to determine what features have the highest correlational power with the car's acceptability. To do so, we first read the data from the file `DataAssign2.csv` and stored all the rows in a variable `n`.
+
+```{r collapse=TRUE}
+#Load the data
+data <- read.csv("DataAssign2.csv")
+
+#Get the number of observations in the dataset
+n = nrow(data)
+```
+
+Next, we proceeded to map all the qualitative outputs of every feature to quantitative values in order to facilitate the process of developing the various ML models.
+
+```{r collapse=TRUE}
+#Define a list which maps each categorical value into a numerical one in the database
+mappings <- list(
+  V1 = c("low" = 1, "med" = 2, "high" = 3, "vhigh" = 4),
+  V2 = c("low" = 1, "med" = 2, "high" = 3, "vhigh" = 4),
+  V3 = c("2" = 2, "3" = 3, "4" = 4, "5more" = 5),
+  V4 = c("2" = 2, "4" = 4, "more" = 6),
+  V5 = c("small" = 1, "med" = 2, "big" = 3),
+  V6 = c("low" = 1, "med" = 2, "high" = 3),
+  V7 = c("bad" = 0, "good" = 1)
+)
+
+# apply the mapping of each feature to a numerical one
+data[, names(mappings)] <- lapply(names(mappings), function(col) mappings[[col]][data[[col]]])
+
+```
+
+## Visualizing the Data
+
+### Correlation Matrix
+
+After that, we used a function `cor()` to study the various correlations amongst the features with the acceptability of the car and proceeded to visualize the output of this function using `corrplot()`
+
+```{r collapse=TRUE}
+# store the correlation matrix which is returned by the cor() function 
+correlation_matrix <- cor(data)
+
+#use the corrplot() function from the corrplot library to plot the correlation matrix
+corrplot(correlation_matrix, method = "color", type = "upper", tl.col = "black", tl.srt = 45)
+
+```
+
+This matrix gives a clear hint at what features actually impact the response (V7) where the red color indicates complete inverse proportionality (-1) while the blue color indicates complete direct proportionality (1). We start with each of V1 (Buying Price of the car) and V2 (Maintenance Price). In both cases, a high level of inverse proportionality between the acceptability of the car and each of its buying price and maintenance price is shown.
+
+We move on to V3 (number of doors) and v5 (trunk/boot size) where it was apparent that no relation exists between these 2 independent variables and V7 whatsoever because of the highly faded color of their correlational box.
+
+Finally, when crossing V7 against each of V4 (passenger capacity) and V6 (Safety), we essentially obtained the same results where the increase in each of these variables would lead to a minor increase in the acceptability of the car (light blue), proving the existence of a directly proportional relationship between V7 and each of V4 and V6. It is also possible to delve into the correlation among the features themselves, but we chose not to as the focus of this part is purely on V7.
+
+### Response Against Each Feature Individually
+
+We then generated a bar graph for the response against each individual feature to visualize the correlation, if it exists. 
+
+To elaborate on the source code, `par()` function was used to visualize all the bar graphs simultaneously on the screen. The red bar represents the non-acceptability of the car while green represents its acceptability.
+
+```{r collapse=TRUE}
+# Defines the subplot grids
+par(mfrow = c(2, 3))
+
+# This function generates a barplot for the selected feature against V7
+generate_barplot <- function(column, title) {
+  # Creates a table which keeps count of the number of occurrence of the car acceptability (good, bad) 
+  counts <- table(data$V7, data[[column]])
+  # Changes the column names to the actual values instead of their mappings
+  colnames(counts) <- unique(names(mappings[[column]]))
+  
+  #plots the barplot
+  barplot(counts, main = title,
+          xlab = column, col = c("red", "green"),
+          legend = rownames(counts), beside = TRUE)
+}
+
+# generates the barplot of V7 against feature V1
+generate_barplot("V1", "Acceptability vs Car price")
+# generates the barplot of V7 against feature V2
+generate_barplot("V2", "Acceptability vs Car Maintenance")
+# generates the barplot of V7 against feature V3
+generate_barplot("V3", "Acceptability vs Door Number")
+# generates the barplot of V7 against feature V4
+generate_barplot("V4", "Acceptability vs Car Capacity")
+# generates the barplot of V7 against feature V5
+generate_barplot("V5", "Acceptability vs Boot/Trunk Size")
+# generates the barplot of V7 against feature V6
+generate_barplot("V6", "Acceptability vs Car safety")
+
+# Reset the subplot
+par(mfrow = c(1, 1))
+
+```
+
+The graphs support the correlation matrix as we can clearly see how the acceptability of the car decreases when V1 and V2 increase in category and how the acceptability increases with the increase of each of V4 and V6.
+
+From these visualizations, we can conclude that V1 and V2 have the highest impact on the acceptability of the car in the market, followed by V4 and v6, with v3 and v4 with the least significant impact.
+
+# Feature Selection
+
+Before proceeding, we decided to filter out the features that have little to no association with the acceptability of the car by following the best subset selection which is considered the optimal choice given the relatively small dataset and low number of features.
+
+```{r collapse=TRUE}
+# Create a formula for your logistic regression model
+formula <- as.formula("V7 ~ .")
+
+# Perform best subset selection
+subset_model <- regsubsets(formula, data = data, method = "exhaustive")
+
+# Get the summary of the subset selection
+summary_subset <- summary(subset_model)
+
+# Extract the 'which' property from the summary
+subset_matrix <- summary_subset$which
+
+subset_matrix
+
+subset_4 <- subset_matrix[4, ]
+
+subset_4
+```
+
+The 'which' property of the best subset selection summary returns a matrix that informs us of the best features to include in our model for any amount of features chosen. In our case, we chose 4 features to be taken. The resulting features are the price of the car (v1), price of maintenance (v2), the size of luggage boot (v5), and estimated of the car (v6).
+
+# Splitting The Data
+
+In this part, we wanted to split the data into a training set and a test set using the validation set approach.
+
+## Creating The Sets
+
+### Setting the seed
+
+We first set a seed to ensure reproducibility of random processes which is crucial for sharing and validating results.
+
+```{r collapse=TRUE}
+# set the seed
+set.seed(10676)
+```
+
+### Performing The Split
+
+Then, we proceed to shuffle the data and split our data between training and testing.
+
+We shuffle the data to avoid any bias in our training and test sets.
+
+```{r collapse=TRUE}
+# shuffle the data
+shuffled_data <- data[sample(n), ]
+
+# get number of training data
+num_train <- round(0.6 * n)
+
+# get the training data from the shuffled data
+train_data <- shuffled_data[1:num_train, ]
+
+#get the test data from the shuffled data
+test_data <- shuffled_data[(num_train + 1):nrow(shuffled_data), ]
+```
+
+# Developing The Model
+
+Now, we use our training dataset to actually develop our model.
+
+We ensure the datatype of our dataset is all numeric for proper training and then we use this numeric data to create our logistic regression model using the features of highest association with the acceptability of the car.
+
+```{r collapse=TRUE}
+# Change the datatype of the data to numeric
+factor_cols <- names(train_data)[sapply(train_data, is.factor)]
+train_data[, factor_cols] <- lapply(train_data[, factor_cols], function(x) as.numeric(as.character(x)))
+test_data[, factor_cols] <- lapply(test_data[, factor_cols], function(x) as.numeric(as.character(x)))
+
+# train the logistic regression model
+model <- glm(V7~V1+V2+V5+V6, data = train_data, family = binomial)
+
+#get a summary for the model
+summary(model)
+```
+
+As we can see, all predictors included appear to be statistically significant with the repsonse, especially v1, v2, and v6. This can be infered because of the significantly low p-value associated with each of these features (<0.001) which acts as an indicator for high correlation with the acceptability of the car. V5 can be considered a relatively weaker predictor due to its greater p-value.  
+
+## Confusion Matrix
+
+Now that we have our model, we can use the function `predict()` to store the probabilities of the acceptability of the car in order to classify our responses according to a decision threshold of our choice where 0 represents the non-acceptability of the car and 1 represents its acceptability. This allows us to compute the confusion matrix.
+
+```{r collapse=TRUE}
+# predict the response for the testing data
+predictions <- predict(model, newdata = test_data, type = "response")
+
+# get the response from the predictions with a threshold of 0.5
+predicted_classes <- ifelse(predictions > 0.5, 1, 0)
+
+# generate the confusion matrix
+conf_matrix <- table(Actual = test_data$V7, Predicted = predicted_classes)
+print(conf_matrix)
+
+# get the error
+error <- 1 - (sum(diag(conf_matrix)) / sum(conf_matrix))
+print(paste("Error rate=", error))
+
+# get the precision
+precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+print(paste("Precision=", precision))
+
+# get the recall
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+print(paste("Recall=", recall))
+
+# get the f1score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+print(paste("F1_score=", f1_score))
+```
+
+Error Rate: The ratio of incorrectly classified observations = 1-accuracy.
+The error obtained from this matrix also represents the error rate of our logistic regression model.
+
+TP= True Positive; the response that is correctly predicted to be positive.
+
+FP= False Positive; the response that is falsely predicted to be positive (true nature is negative).
+
+TN= True Negative; the response that is correctly predicted to be negative.
+
+FN= False Negative; the response that is falsely predicted to be negative (true nature is positive).
+
+Accuracy: The ratio of correctly classified observations = (TP+TN)/Total.
+
+Precision: The ratio of correct positive predictions to the overall number of positive predictions = TP/(TP+FP).
+
+Recall: The ratio of correct positive predictions to the overall number of positive observations = TP/(TP+FN).
+
+F1 Score: The harmonic mean of precision and recall = 2*(Precision*Recall)/(Precision+Recall).
+
+From this matrix, we can see that only 3 responses have been falsely predicted; 1 FP and 2 FN. This is reflected in our high recall and precision values indicating that our model is mostly assessing the potential acceptability of the car in the market correctly. 
+
+The precision value of 0.98 means that our model predicts an unacceptable car in the market 2% of the time. Moreover, the the recall value of 0.96 infers that our model falsely predicts the unacceptability of the car in the market 4% of the time (the true nature of the car would actually be acceptable).
+
+# Discriminant Analysis
+
+Similarly to logistic regression, we're applying linear discriminant analysis (LDA) and quadratic discriminant analysis (QDA) on the provided dataset in an attempt to evaluate the performance of these different models. To compare the results, a ROC curve was constructed for each model and the corresponding AUC was computed.
+
+## Training The Models
+
+NOTE: Logistic Regression is reiterated over in this section for ease of navigation and comparison.
+
+### Logistic Regression
+
+```{r}
+# Train the Logistic Regression model
+LR_model <- glm(V7 ~ V1+V2+V5+V6, data = train_data, family = binomial)
+```
+
+### Linear Discriminant Analysis (LDA)
+
+```{r}
+# Train the LDA model
+lda_model <- lda(V7 ~ V1+V2+V5+V6, data = train_data)
+```
+
+### Quadratic Discriminant Analysis (QDA)
+
+```{r}
+# Train the QDA model
+qda_model <- qda(V7 ~ V1+V2+V5+V6, data = train_data)
+```
+
+## Testing the Models
+
+After training each model, as shown in the above code snippets, the models were tested by predicting the probabilities that a certain observation would belong to the 'non-acceptable' class (encoded by a 0) or the 'acceptable' class (encoded by a 1).
+The chosen threshold is `0.5`. Any probability above 50% indicates that the observation belongs the acceptable class. Otherwise, the observation would belong to the non-acceptable class.
+
+For each model, the error rate, accuracy, precision, recall, and F1 score were computed.
+(Refer to the definition of each in the previous section)
+
+### Logistic Regression
+
+```{r}
+# predict the response for the testing data for Logistic Regression
+LR_predictions <- predict(model, newdata = test_data, type = "response")
+
+# get the response from the predictions with a threshold of 0.5
+predicted_classes <- ifelse(LR_predictions > 0.5, 1, 0)
+
+# generate the confusion matrix for Logistic Regression
+conf_matrix <- table(Actual = test_data$V7, Predicted = predicted_classes)
+print(conf_matrix)
+
+# get the error for Logistic Regression
+error_rate <- 1 - (sum(diag(conf_matrix)) / sum(conf_matrix))
+# get the accuracy for Logistic Regression
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+# get the precision for Logistic Regression
+precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+# get the recall for Logistic Regression
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+# get the f1score for Logistic Regression
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+error_rate
+accuracy
+precision
+recall
+f1_score
+```
+
+(Refer to the previous section for the interpretation of the confusion matrix for Logsitic Regression)
+
+### Linear Discriminant Analysis (LDA)
+
+Similarly to that of the Logistic Regression model, the LDA's confusion matrix shows TP, TN, FP, and FN.
+
+```{r}
+# predict the response for the testing data for LDA
+LDA_predictions <- predict(lda_model, newdata = test_data)$posterior[, "1"]
+# get the response from the predictions with a threshold of 0.5
+predicted_classes <- as.numeric(LDA_predictions > 0.5)
+
+# generate the confusion matrix for LDA
+conf_matrix <- table(Actual = test_data$V7, Predicted = predicted_classes)
+print(conf_matrix)
+
+# get the error for LDA
+error_rate <- (conf_matrix[1, 2] + conf_matrix[2, 1]) / sum(conf_matrix)
+# get the accuracy for LDA
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+# get the precision for LDA
+precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+# get the recall for LDA
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+# get the f1 score for LDA
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+error_rate
+accuracy
+precision
+recall
+f1_score
+```
+
+### Quadratic Discriminant Analysis (QDA)
+
+Similarly to that of the Logistic Regression model and the LDA, the QDA's confusion matrix shows TP, TN, FP, and FN.
+
+```{r}
+# predict the response for the testing data for QDA
+QDA_predictions <- predict(lda_model, newdata = test_data)$posterior[, "1"]
+# get the response from the predictions with a threshold of 0.5
+predicted_classes <- as.numeric(QDA_predictions > 0.5)
+
+# generate the confusion matrix for QDA
+conf_matrix <- table(Actual = test_data$V7, Predicted = predicted_classes)
+print(conf_matrix)
+
+# get the error for QDA
+error_rate <- (conf_matrix[1, 2] + conf_matrix[2, 1]) / sum(conf_matrix)
+# get the accuracy for QDA
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+# get the precision for QDA
+precision <- conf_matrix[2, 2] / sum(conf_matrix[, 2])
+# get the recall for QDA
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+# get the f1 score for QDA
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+error_rate
+accuracy
+precision
+recall
+f1_score
+```
+
+## ROC Curves
+
+To better compare the performance of each model, a ROC curve was graphed for every model to compute each corresponding Area Under the Curve (AUC).
+The larger the area, the better model generally is.
+
+```{r}
+# create a subplot to visualize the ROC curves next to each other
+par(nfrow = c(1, 3))
+```
+
+### Logistic Regression
+
+```{r}
+# create an instance of the prediction class using LR_predictions
+pred<-prediction(LR_predictions, test_data$V7)
+# calculate the ROC curve values for logistic regression
+perf <- performance(pred, "tpr", "fpr")
+# plot the ROC curve for Logistic Regression
+plot(perf, main = "ROC Curve - Logistic Regression", col = "blue", lwd = 2)
+text(0.5, 0.5, paste("AUC =", round(performance(pred, "auc")@y.values[[1]], 2)), col = "red", cex = 1.2)
+```
+
+### Lineary Discriminant Analysis (LDA)
+
+```{r}
+# create an instance of the prediction class using lda_predictions
+pred<-prediction(LDA_predictions, test_data$V7)
+# calculate the ROC curve values for LDA
+perf <- performance(pred, "tpr", "fpr")
+# plot the ROC curve for LDA
+plot(perf, main = "ROC Curve - LDA", col = "blue", lwd = 2)
+text(0.5, 0.5, paste("AUC =", round(performance(pred, "auc")@y.values[[1]], 2)), col = "red", cex = 1.2)
+```
+
+### Quadratic Discriminant Analysis (QDA)
+
+```{r}
+# create an instance of the prediction class using qda_predictions
+pred<-prediction(QDA_predictions, test_data$V7)
+# calculate the ROC curve values for QDA
+perf <- performance(pred, "tpr", "fpr")
+# plot the ROC curve for QDA
+plot(perf, main = "ROC Curve - QDA", col = "blue", lwd = 2)
+text(0.5, 0.5, paste("AUC =", round(performance(pred, "auc")@y.values[[1]], 2)), col = "red", cex = 1.2)
+```
+
+### Analyzing the Findings
+
+As shown in the previous plots, all models show an AUC greater than 0.9, which is considered to be excellent. However, both the QDA shows an AUC of 1 (the 'perfect model') which is greater than that of Logistic Regression (0.99) and that of LDA (0.99).
+
+# K-Nearest Neighbors (KNN)
+
+KNN is another model that can be employed for classification problems. It executes by averaging out the k-nearest neighbors using majority rule. If the majority of the k neighbors are of a certain class, then the prediction would be as well.
+The different test errors obtained from different values of k were graphed in the following line graph for visualization and analysis.
+
+```{r}
+# create a list of k-values to try
+k_values <- seq(1, 20)
+
+# initialize an array to keep track of the error at a particular k_value
+err_y <- c()
+
+# Run k-Nearest Neighbors for each k-value
+for (k_value in k_values){ 
+  # define the KNN model using the training data
+  knn_model <- knn(train = train_data[, -which(names(train_data) == "V7")],
+                   test = test_data[, -which(names(test_data) == "V7")],
+                   cl = train_data$V7,
+                   k = k_value)
+  
+  # Evaluate the error
+  error <- sum(knn_model != test_data$V7) / length(test_data$V7)
+  #append the error to the err_y list
+  err_y <- append(err_y, error)
+}
+
+# plot the curve showing the error rates for each k-value used
+plot(k_values, err_y, xlim = c(1, 20), ylim = c(0, 1), type = 'o',
+     xlab = "k_values", ylab = "Error Rate",
+     main = "Error Rate vs. k_values",
+     pch = 19, col = "red")
+```
+
+The line graph shows the different errors attained for different values of k. The graph shows the test error fluctuating between a minimum at k = 7 and a maximum k = 8. Therefore, the best k for this dataset would be 7.
+
+# Estimating the Error
+
+To better estimate the test error of the QDA model, since the error can differ depending on the provided data, two methods are employed: Cross Validation and Bootstrap. The details of each method and their respective results are described in the following two sections.
+
+## 5-Fold Cross-Validation
+
+Applying a 5-fold cross-validation, our main dataset is distributed 5 different times such that the test set is 20% (i.e. one-fifth) of the original dataset size. The model trains on the remaining fourth-fifths of the dataset.
+This ensures that at the end of the validation, the model would have trained on all observations and tested all observations at least once.
+The final result displays the average of these different test errors.
+
+```{r}
+# define the number of test observations (20% since we are using 5-fold)
+num_test <- round(0.2 * nrow(shuffled_data))
+# keep track of the sum of errors for each iteration
+err_sum <- 0
+for (i in 1:5){
+  # define the start index for the test data
+  indx <- (i-1) * num_test + 1
+  
+  # define the test data
+  test_data <- shuffled_data[indx:(indx+num_test-1), ]
+  # define the train data
+  train_data <- shuffled_data[-(indx:(indx+num_test-1)), ]
+  # train the qda model
+  qda_model <- qda(V7 ~ ., data = train_data)
+  
+  # get the predictions for the test data
+  predictions <- predict(qda_model, newdata = test_data)$posterior[, "1"]
+  # get the class of each prediction
+  predicted_classes <- as.numeric(predictions > 0.5)
+  # calculate the error and add it to the error sum
+  err_sum <- err_sum + sum(predicted_classes != test_data$V7) / length(test_data$V7)
+  
+}
+
+# average out the error
+avg_err <- err_sum/5
+
+avg_err
+```
+
+The 5-fold cross-validation approach shows an error rate of approximately 0.026 which is more than that of the validation set (0.019). That is expected since the cross-validation is less variable than the validation set approach as it averages out different error rates. This better approximates the value of true test error.
+
+## Bootstrap
+
+Bootstrap is another way of better estimating the test error. It is built on the foundation of creating new datasets of the same size as the original one by randomly selecting, with replacement, different observations from the original dataset. This allows the model to train and test on "different" datasets that are generated from the same pool of observations.
+
+```{r}
+# define the number of training data
+num_train <- round(0.6 * n)
+
+# define the error sum
+err_sum <- 0
+
+# define the number of times to repeate the bootstrap
+num_boot <- 10
+
+
+for (i in 1:num_boot){
+  # generate the bootstraped data
+  bootstraped_data <- data[sample(n, replace = TRUE), ]
+  # get the training data
+  train_data <- bootstraped_data[1:num_train, ]
+  # get the testing data
+  test_data <- bootstraped_data[(num_train + 1):nrow(bootstraped_data), ]
+  
+  # Change the datatype of the data to numeric
+  factor_cols <- names(train_data)[sapply(train_data, is.factor)]
+  train_data[, factor_cols] <- lapply(train_data[, factor_cols], function(x) as.numeric(as.character(x)))
+  test_data[, factor_cols] <- lapply(test_data[, factor_cols], function(x) as.numeric(as.character(x)))
+  
+  # train the qda model
+  qda_model <- qda(V7 ~ V1+V2+V5+V6, data = train_data)
+  # get the predictions for the test data
+  predictions <- predict(qda_model, newdata = test_data)$posterior[, "1"]
+  # get the class of each prediction
+  predicted_classes <- as.numeric(predictions > 0.5)
+  # calculate the error and add it to the error sum
+  err_sum <- err_sum + sum(predicted_classes != test_data$V7) / length(test_data$V7)
+}
+
+# average out the error according to the number of bootstrap examples
+avg_err = err_sum/num_boot
+
+avg_err
+```
+
+For this report, we opted to create 10 different datasets and average the test errors that resulted from each. The average error rate obtained after running bootstrap 10 times is equal to 0.031.
+
+# Conclusion
+
+This report summarizes the results obtained from feature selection, the different performance metrics derived from the confusion matrices for each of logistic regression, LDA, and QDA, as well as the errors for these three models in addition to to that of KNN. The test error was also estimated using the validation set approach, 5-fold cross validation, and bootstrap.
+To wrap up, the four features MAR has to focus on to significantly increase revenues are the price of the car, price of maintenance, the size of luggage boot, and estimated of the car. QDA's ROC curve shows an AUC of 1, which indicates that QDA may be a good model choice to evaluate whether MAR's products would be well-accpeted by the target market audience.
